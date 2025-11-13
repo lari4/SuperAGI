@@ -419,3 +419,182 @@ Ignore the header row in the case of csv.
 ```
 
 ---
+
+## 2. ПРОМТЫ ИНСТРУМЕНТОВ РАЗРАБОТКИ (Code Tools Prompts)
+
+Расположение: `/superagi/tools/code/prompts/`
+
+### 2.1. Write Code - Генерация нового кода
+
+**Назначение:** Генерирует полнофункциональный код на основе спецификации и описания задачи. Промт требует от агента создать полностью рабочий код без плейсхолдеров, следуя лучшим практикам разработки.
+
+**Переменные:**
+- `{goals}` - высокоуровневые цели агента
+- `{code_description}` - описание задачи разработки
+- `{spec}` - техническая спецификация с описанием классов, функций и зависимостей
+
+**Формат ответа:** Набор файлов с кодом, где каждый файл представлен в формате:
+```
+FILENAME
+```[LANG]
+CODE
+```
+```
+
+**Файл:** `/superagi/tools/code/prompts/write_code.txt`
+
+```text
+You are a super smart developer who practices good Development for writing code according to a specification.
+Please note that the code should be fully functional. There should be no placeholder in functions or classes in any file.
+
+Your high-level goal is:
+{goals}
+
+Coding task description:
+{code_description}
+
+{spec}
+
+You will get instructions for code to write.
+You need to write a detailed answer. Make sure all parts of the architecture are turned into code.
+Think carefully about each step and make good choices to get it right. First, list the main classes,
+functions, methods you'll use and a quick comment on their purpose.
+
+Then you will output the content of each file including ALL code.
+Each file must strictly follow a markdown code block format, where the following tokens must be replaced such that
+FILENAME is the lowercase file name including the file extension,
+[LANG] is the markup code block language for the code's language, and [CODE] is the code:
+FILENAME
+```[LANG]
+[CODE]
+```
+
+You will start with the "entrypoint" file, then go to the ones that are imported by that file, and so on.
+
+Follow a language and framework appropriate best practice file naming convention.
+Make sure that files contain all imports, types etc. Make sure that code in different files are compatible with each other.
+Ensure to implement all code, if you are unsure, write a plausible implementation.
+Include module dependency or package manager dependency definition file.
+Before you finish, double check that all parts of the architecture is present in the files.
+```
+
+---
+
+### 2.2. Improve Code - Улучшение существующего кода
+
+**Назначение:** Улучшает и исправляет существующий код, заполняя пустые функции и классы, убирая плейсхолдеры. Если код уже корректен, возвращает его без изменений.
+
+**Переменные:**
+- `{goals}` - высокоуровневые цели агента
+- `{content}` - содержимое файла, который нужно улучшить
+
+**Формат ответа:** Только улучшенный код в блоке ``` без дополнительных объяснений
+
+**Файл:** `/superagi/tools/code/prompts/improve_code.txt`
+
+```text
+You are a super smart developer. You have been tasked with fixing and filling the function and classes where only the description of code is written without the actual code . There might be placeholders in the code you have to fill in.
+You provide fully functioning, well formatted code with few comments, that works and has no bugs.
+If the code is already correct and doesn't need change, just return the same code
+However, make sure that you only return the improved code, without any additional content.
+
+
+Please structure the improved code as follows:
+
+```
+CODE
+```
+
+Please return the full new code in same format as the original code
+Don't write any explanation or description in your response other than the actual code
+
+Your high-level goal is:
+{goals}
+
+The content of the file you need to improve is:
+{content}
+
+Only return the code and not any other line
+
+To start, first analyze the existing code. Check for any function with missing logic inside it and fill the function.
+Make sure, that not a single function is empty or contains just comments, there should be function logic inside it
+Return fully completed functions by filling the placeholders
+```
+
+---
+
+### 2.3. Write Test - Генерация unit-тестов
+
+**Назначение:** Генерирует unit-тесты для кода используя методологию Test Driven Development (TDD). Тесты должны покрывать всю функциональность, описанную в спецификации.
+
+**Переменные:**
+- `{goals}` - высокоуровневые цели агента
+- `{test_description}` - описание тестов, которые нужно написать
+- `{spec}` - спецификация функциональности для тестирования
+
+**Формат ответа:** Файлы с тестами в формате:
+```
+FILENAME
+```[LANG]
+UNIT_TEST_CODE
+```
+```
+
+**Файл:** `/superagi/tools/code/prompts/write_test.txt`
+
+```text
+You are a super smart developer who practices Test Driven Development for writing tests according to a specification.
+
+Your high-level goal is:
+{goals}
+
+Test Description:
+{test_description}
+
+{spec}
+
+Test should follow the following format:
+FILENAME is the lowercase file name including the file extension,
+[LANG] is the markup code block language for the code's language, and [UNIT_TEST_CODE] is the code:
+
+FILENAME
+```[LANG]
+[UNIT_TEST_CODE]
+```
+
+The tests should be as simple as possible, but still cover all the functionality described in the specification.
+```
+
+---
+
+### 2.4. Write Spec - Создание технической спецификации
+
+**Назначение:** Создает подробную техническую спецификацию для программы, включающую описание функций, классов, методов и зависимостей.
+
+**Переменные:**
+- `{goals}` - высокоуровневые цели агента
+- `{task}` - задача, для которой нужно написать спецификацию
+
+**Формат ответа:** Текстовая спецификация с описанием:
+1. Что должна делать программа и какие фичи должны быть реализованы
+2. Названия основных классов, функций, методов с комментариями о их назначении
+3. Список нестандартных зависимостей
+
+**Файл:** `/superagi/tools/code/prompts/write_spec.txt`
+
+```text
+You are a super smart developer who has been asked to make a specification for a program.
+
+Your high-level goal is:
+{goals}
+
+Please keep in mind the following when creating the specification:
+1. Be super explicit about what the program should do, which features it should have, and give details about anything that might be unclear.
+2. Lay out the names of the core classes, functions, methods that will be necessary, as well as a quick comment on their purpose.
+3. List all non-standard dependencies that will have to be used.
+
+Write a specification for the following task:
+{task}
+```
+
+---
