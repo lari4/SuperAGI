@@ -324,3 +324,396 @@ Direct Execution - это основной режим работы агента,
 6. **Retry Logic** - автоматический retry при ошибках с exponential backoff
 
 ---
+
+## Pipeline 2: Task-Based Execution
+
+### Описание
+
+Task-Based Execution - это режим работы агента с управлением очередью задач через Redis. Агент разбивает высокоуровневую цель на список подзадач, которые выполняются последовательно. Каждая задача обрабатывается в отдельной итерации с использованием основного Iteration Workflow.
+
+### Компоненты
+
+**Обработчик:** `AgentIterationStepHandler` + `QueueStepHandler`
+**Файлы:**
+- `/superagi/agent/agent_iteration_step_handler.py`
+- `/superagi/agent/queue_step_handler.py`
+- `/superagi/agent/task_queue.py`
+**Action Type:** `ITERATION_WORKFLOW` (с `has_task_queue=True`)
+
+### Схема пайплайна
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ИНИЦИАЛИЗАЦИЯ ЗАДАЧ                                         │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 1: Генерация начального списка задач
+┌─────────────────────────────────────────────────────────────┐
+│ AgentIterationStepHandler с IterationWorkflow              │
+│ (has_task_queue = true)                                     │
+│                                                              │
+│ Промт: initialize_tasks.txt                                │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ GOALS: {goals}                                       │  │
+│ │ {task_instructions}                                  │  │
+│ │                                                       │  │
+│ │ Construct a sequence of actions,                     │  │
+│ │ not exceeding 3 steps                                │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ LLM Response (JSON Array):                           │  │
+│ │ [                                                    │  │
+│ │   "Research web scraping libraries",                 │  │
+│ │   "Write Python scraping code",                      │  │
+│ │   "Test and save results"                            │  │
+│ │ ]                                                    │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ TaskQueue.add_task() для каждой задачи               │  │
+│ │                                                       │  │
+│ │ Redis Lists:                                         │  │
+│ │ {queue_id}_q → ["Research...", "Write...", "Test"]  │  │
+│ │ {queue_id}_q_completed → []                          │  │
+│ └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ ВЫПОЛНЕНИЕ ЗАДАЧ (Task Execution Loop)                     │
+└─────────────────────────────────────────────────────────────┘
+
+ИТЕРАЦИЯ N: Обработка текущей задачи
+┌─────────────────────────────────────────────────────────────┐
+│ AgentIterationStepHandler.execute_step()                    │
+│                                                              │
+│ STEP 1: Получение текущей задачи из очереди                │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ task_queue.get_first_task()                          │  │
+│ │ → current_task = "Research web scraping libraries"   │  │
+│ │                                                       │  │
+│ │ task_queue.get_completed_tasks()                     │  │
+│ │ → completed_tasks = []                               │  │
+│ │                                                       │  │
+│ │ task_queue.get_tasks()                               │  │
+│ │ → pending_tasks = ["Write...", "Test..."]           │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ STEP 2: Построение промпта с информацией о задачах         │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ _build_agent_prompt()                                │  │
+│ │                                                       │  │
+│ │ Промт: analyse_task.txt                             │  │
+│ │ ┌────────────────────────────────────────────────┐  │  │
+│ │ │ High level goal: {goals}                       │  │  │
+│ │ │ Your Current Task: `{current_task}`            │  │  │
+│ │ │ Task History: `{task_history}`                 │  │  │
+│ │ │                                                 │  │  │
+│ │ │ Based on this, pick tool to achieve task       │  │  │
+│ │ │ TOOLS: {tools}                                 │  │  │
+│ │ └────────────────────────────────────────────────┘  │  │
+│ │                                                       │  │
+│ │ Переменные:                                          │  │
+│ │ {current_task} → "Research web scraping libraries"  │  │
+│ │ {pending_tasks} → ["Write...", "Test..."]          │  │
+│ │ {completed_tasks} → []                              │  │
+│ │ {task_history} → история с результатами             │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ STEP 3: LLM выбирает инструмент для задачи                 │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ llm.chat_completion(messages)                        │  │
+│ │                                                       │  │
+│ │ Response:                                            │  │
+│ │ {                                                    │  │
+│ │   "thoughts": {                                      │  │
+│ │     "reasoning": "Need to search online for libs"   │  │
+│ │   },                                                 │  │
+│ │   "tool": {                                          │  │
+│ │     "name": "WebSearch",                            │  │
+│ │     "args": {                                        │  │
+│ │       "query": "best Python web scraping libraries" │  │
+│ │     }                                                │  │
+│ │   }                                                  │  │
+│ │ }                                                    │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ STEP 4: Выполнение инструмента                             │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ ToolExecutor.execute("WebSearch", args)              │  │
+│ │ → "Found: BeautifulSoup, Scrapy, Selenium..."       │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ STEP 5: Проверка завершения и обновление очереди           │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ _check_for_completion()                              │  │
+│ │                                                       │  │
+│ │ if tool_name == "finish" or task completed:          │  │
+│ │    task_queue.complete_task(tool_response)           │  │
+│ │    │                                                  │  │
+│ │    ├─ LPOP from {queue_id}_q                         │  │
+│ │    │  (удаляет "Research..." из pending)             │  │
+│ │    │                                                  │  │
+│ │    └─ LPUSH to {queue_id}_q_completed                │  │
+│ │       (добавляет в completed с результатом)          │  │
+│ │                                                       │  │
+│ │ Redis после завершения:                              │  │
+│ │ {queue_id}_q → ["Write...", "Test..."]              │  │
+│ │ {queue_id}_q_completed → [                           │  │
+│ │   {                                                  │  │
+│ │     "task": "Research...",                           │  │
+│ │     "response": "Found: BeautifulSoup..."           │  │
+│ │   }                                                  │  │
+│ │ ]                                                    │  │
+│ └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ СЛЕДУЮЩАЯ ИТЕРАЦИЯ                                          │
+│                                                              │
+│ if len(task_queue.get_tasks()) > 0:                         │
+│    → execute_agent.apply_async(countdown=2)                 │
+│    → Обработка следующей задачи "Write..."                 │
+│                                                              │
+│ else:                                                        │
+│    → status = COMPLETED                                     │
+│    → Все задачи выполнены                                  │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ ДИНАМИЧЕСКОЕ УПРАВЛЕНИЕ ЗАДАЧАМИ                            │
+└─────────────────────────────────────────────────────────────┘
+
+CREATE NEW TASKS: Добавление новых задач во время выполнения
+┌─────────────────────────────────────────────────────────────┐
+│ Промт: create_tasks.txt                                     │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ High level goal: {goals}                             │  │
+│ │ Incomplete tasks: {pending_tasks}                    │  │
+│ │ Completed tasks: {completed_tasks}                   │  │
+│ │ Task History: {task_history}                         │  │
+│ │                                                       │  │
+│ │ Create a single task ONLY IF REQUIRED               │  │
+│ │ Don't create if already covered                      │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ LLM Response:                                        │  │
+│ │ ["Create documentation for the scraper"]            │  │
+│ │                                                       │  │
+│ │ или                                                  │  │
+│ │                                                       │  │
+│ │ []  (no new tasks needed)                            │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ task_queue.add_task() для каждой новой задачи        │  │
+│ └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+
+PRIORITIZE TASKS: Переприоритизация существующих задач
+┌─────────────────────────────────────────────────────────────┐
+│ Промт: prioritize_tasks.txt                                 │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ High level goal: {goals}                             │  │
+│ │ Incomplete tasks: {pending_tasks}                    │  │
+│ │ Completed tasks: {completed_tasks}                   │  │
+│ │                                                       │  │
+│ │ Sort tasks in order of execution                     │  │
+│ │ Remove unnecessary or duplicate tasks                │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ LLM Response (prioritized array):                    │  │
+│ │ [                                                    │  │
+│ │   "Test and save results",                           │  │
+│ │   "Write Python scraping code"                       │  │
+│ │ ]                                                    │  │
+│ └──────────────────────────────────────────────────────┘  │
+│                         │                                    │
+│                         ▼                                    │
+│ ┌──────────────────────────────────────────────────────┐  │
+│ │ task_queue.clear_tasks()                             │  │
+│ │ task_queue.add_task() в новом порядке                │  │
+│ └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Используемые промты
+
+1. **initialize_tasks.txt** - начальная генерация задач (максимум 3 шага)
+2. **analyse_task.txt** - анализ текущей задачи и выбор инструмента
+3. **create_tasks.txt** - добавление новых задач при необходимости
+4. **prioritize_tasks.txt** - переприоритизация списка задач
+
+### Redis структура данных
+
+```python
+# Queue ID формат: agent_execution_{id}
+queue_id = f"agent_execution_{agent_execution_id}"
+
+# Redis Keys:
+{queue_id}_q                 # LPUSH/LPOP - pending tasks (список строк)
+{queue_id}_q_completed       # LPUSH - completed tasks (список объектов)
+{queue_id}_status            # SET/GET - статус очереди (INITIATED/PROCESSING/COMPLETE)
+
+# Примеры данных:
+pending: ["Task 1", "Task 2", "Task 3"]
+completed: [
+  {
+    "task": "Task 0",
+    "response": "Result of task 0"
+  }
+]
+```
+
+### Поток данных
+
+#### Входные данные:
+- `goals` - высокоуровневые цели
+- `task_instructions` - инструкции по управлению задачами
+- `iteration_workflow` - workflow с `has_task_queue=True`
+
+#### Промежуточные данные:
+- `current_task` - текущая задача из очереди (первая в списке)
+- `pending_tasks` - список незавершенных задач
+- `completed_tasks` - список выполненных задач с результатами
+- `task_history` - форматированная история для промпта
+
+#### Выходные данные:
+- Обновленная Redis очередь (pending/completed списки)
+- `AgentExecutionFeed` - записи с выполнением каждой задачи
+- Финальный статус `COMPLETED` когда очередь пуста
+
+### Пример полного выполнения
+
+```
+═══════════════════════════════════════════════════════════
+GOAL: "Create a web scraper for product prices"
+═══════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────┐
+│ INITIALIZATION (Промт: initialize_tasks.txt)            │
+└─────────────────────────────────────────────────────────┘
+LLM генерирует задачи:
+[
+  "Research web scraping libraries and methods",
+  "Write Python code to scrape product prices",
+  "Test scraper and save results to file"
+]
+
+Redis State:
+  pending: ["Research...", "Write...", "Test..."]
+  completed: []
+
+┌─────────────────────────────────────────────────────────┐
+│ ITERATION 1: Task "Research..."                         │
+└─────────────────────────────────────────────────────────┘
+Промт: analyse_task.txt
+  current_task: "Research web scraping libraries and methods"
+  pending_tasks: ["Write...", "Test..."]
+  completed_tasks: []
+
+LLM → Tool: WebSearch("Python web scraping libraries")
+Result: "BeautifulSoup, Scrapy, Selenium are popular..."
+
+task_queue.complete_task(result)
+
+Redis State:
+  pending: ["Write...", "Test..."]
+  completed: [{
+    "task": "Research...",
+    "response": "BeautifulSoup, Scrapy..."
+  }]
+
+┌─────────────────────────────────────────────────────────┐
+│ ITERATION 2: Task "Write..."                            │
+└─────────────────────────────────────────────────────────┘
+Промт: analyse_task.txt
+  current_task: "Write Python code to scrape product prices"
+  pending_tasks: ["Test..."]
+  completed_tasks: [{task: "Research...", response: "..."}]
+  task_history: "Research... → BeautifulSoup, Scrapy..."
+
+LLM → Tool: CodingTool(
+  task: "Write scraper using BeautifulSoup",
+  spec: "Based on research results..."
+)
+Result: "scraper.py created with BeautifulSoup code"
+
+task_queue.complete_task(result)
+
+Redis State:
+  pending: ["Test..."]
+  completed: [
+    {task: "Research...", response: "BeautifulSoup..."},
+    {task: "Write...", response: "scraper.py created..."}
+  ]
+
+┌─────────────────────────────────────────────────────────┐
+│ ITERATION 3: Task "Test..."                             │
+└─────────────────────────────────────────────────────────┘
+Промт: analyse_task.txt
+  current_task: "Test scraper and save results to file"
+  pending_tasks: []
+  completed_tasks: [...]
+  task_history: "Research... → ...\nWrite... → ..."
+
+LLM → Tool: Execute("python scraper.py")
+Result: "Scraper tested successfully, results saved"
+
+task_queue.complete_task(result)
+
+Redis State:
+  pending: []
+  completed: [
+    {task: "Research...", response: "..."},
+    {task: "Write...", response: "..."},
+    {task: "Test...", response: "results saved"}
+  ]
+
+┌─────────────────────────────────────────────────────────┐
+│ COMPLETION                                               │
+└─────────────────────────────────────────────────────────┘
+len(pending_tasks) == 0
+→ AgentExecution.status = COMPLETED
+→ Все задачи выполнены
+```
+
+### Особенности
+
+1. **Планирование** - LLM разбивает цель на подзадачи в начале
+2. **Последовательность** - задачи выполняются одна за другой
+3. **Контекст** - каждая задача видит результаты предыдущих через task_history
+4. **Динамичность** - можно добавлять новые задачи или переприоритизировать
+5. **Redis-based** - персистентность задач в Redis, выживает при перезагрузке
+6. **Лимит итераций** - каждая задача учитывается в max_iterations
+
+### Интеграция с Iteration Workflow
+
+Task-Based Execution использует тот же `AgentIterationStepHandler`, но с дополнительной логикой:
+
+```python
+if iteration_workflow.has_task_queue:
+    # Task-based mode
+    current_task = task_queue.get_first_task()
+    prompt = replace_task_based_variables(prompt,
+                                          current_task,
+                                          pending_tasks,
+                                          completed_tasks)
+else:
+    # Regular iteration mode
+    prompt = base_prompt
+```
+
+---
