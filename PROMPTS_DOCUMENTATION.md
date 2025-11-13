@@ -598,3 +598,209 @@ Write a specification for the following task:
 ```
 
 ---
+
+## 3. ПРОМТЫ GITHUB ИНСТРУМЕНТА (GitHub Tools Prompts)
+
+Расположение: `/superagi/tools/github/prompts/`
+
+### 3.1. Code Review - Ревью Pull Request
+
+**Назначение:** Проводит детальное code review Pull Request, анализируя изменения в коде и выявляя проблемы в логике, модульности, поддерживаемости и сложности. Игнорирует мелкие стилистические проблемы и фокусируется на значимых улучшениях.
+
+**Переменные:**
+- `{{DIFF_CONTENT}}` - содержимое diff файла из Pull Request
+
+**Особенности:**
+- Анализирует только добавленные строки (начинающиеся с '+')
+- Игнорирует удаленные строки (начинающиеся с '-')
+- Не комментирует frontend и GraphQL код
+- Фокусируется на логике, модульности, поддерживаемости и сложности
+
+**Формат ответа:** JSON с массивом комментариев, каждый комментарий содержит:
+- `file_path` - путь к файлу
+- `line` - номер строки
+- `comment` - текст комментария
+
+**Файл:** `/superagi/tools/github/prompts/code_review.txt`
+
+```text
+Your purpose is to act as a highly experienced software engineer and provide a thorough review of the code chunks and suggest code snippets to improve key areas such as:
+- Logic
+- Modularity
+- Maintainability
+- Complexity
+
+Do not comment on minor code style issues, missing comments/documentation. Identify and resolve significant concerns to improve overall code quality while deliberately disregarding minor issues
+
+Following is the github pull request diff content:
+```
+{{DIFF_CONTENT}}
+```
+
+Instructions:
+1. Do not comment on existing lines and deleted lines.
+2. Ignore the lines start with '-'.
+3. Only consider lines starting with '+' for review.
+4. Do not comment on frontend and graphql code.
+
+Respond with only valid JSON conforming to the following schema:
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The path to the file where the comment should be added."
+          },
+          "line": {
+            "type": "integer",
+            "description": "The line number where the comment should be added. "
+          },
+          "comment": {
+            "type": "string",
+            "description": "The content of the comment."
+          }
+        },
+        "required": ["file_name", "line", "comment"]
+      }
+    }
+  },
+  "required": ["comments"]
+}
+
+Ensure response is valid JSON conforming to the following schema.
+```
+
+---
+
+## 4. ПРОМТЫ THINKING ИНСТРУМЕНТА (Thinking Tool Prompts)
+
+Расположение: `/superagi/tools/thinking/prompts/`
+
+### 4.1. Thinking - Интеллектуальное решение проблем
+
+**Назначение:** Специальный промт для глубокого анализа и решения проблем. Агент должен понять проблему, извлечь ключевые переменные, быть умным и эффективным в принятии решений. Предоставляет описательный ответ с обоснованием решений.
+
+**Переменные:**
+- `{goals}` - общие цели агента
+- `{task_description}` - описание текущей задачи
+- `{last_tool_response}` - результат последнего выполненного инструмента
+- `{relevant_tool_response}` - релевантные результаты предыдущих инструментов
+
+**Особенности:**
+- Используется для задач, требующих аналитического мышления
+- Агент должен самостоятельно принимать решения при выборе между вариантами
+- Требует предоставления обоснования для идей и решений
+- Получает контекст из предыдущих действий
+
+**Формат ответа:** Описательный текстовый ответ с обоснованием решений
+
+**Файл:** `/superagi/tools/thinking/prompts/thinking.txt`
+
+```text
+Given the following overall objective
+Objective:
+{goals}
+
+and the following task, `{task_description}`.
+
+Below is last tool response:
+`{last_tool_response}`
+
+Below is the relevant tool response:
+`{relevant_tool_response}`
+
+Perform the task by understanding the problem, extracting variables, and being smart
+and efficient. Provide a descriptive response, make decisions yourself when
+confronted with choices and provide reasoning for ideas / decisions.
+```
+
+---
+
+## 5. ОБЩАЯ ИНФОРМАЦИЯ О ПРОМТАХ
+
+### 5.1. Структура системы промтов
+
+SuperAGI использует модульную систему промтов, где каждый промт отвечает за конкретную функцию:
+
+**Категории промтов:**
+1. **Управление агентом** - основной цикл работы агента (superagi.txt)
+2. **Управление задачами** - инициализация, создание, анализ и приоритизация задач
+3. **Обработка инструментов** - подготовка входных данных и анализ результатов
+4. **Память агента** - суммаризация истории для Long Term Memory
+5. **Специализированные инструменты** - промты для code generation, testing, review и thinking
+
+### 5.2. Ключевые компоненты обработки промтов
+
+**Классы для работы с промтами:**
+
+- **PromptReader** (`/superagi/helper/prompt_reader.py`)
+  - `read_agent_prompt()` - чтение промтов агента
+  - `read_tools_prompt()` - чтение промтов инструментов
+
+- **AgentPromptTemplate** (`/superagi/agent/agent_prompt_template.py`)
+  - Управление шаблонами промтов
+  - Получение конкретных промтов для разных этапов работы
+
+- **AgentPromptBuilder** (`/superagi/agent/agent_prompt_builder.py`)
+  - Построение финальных промтов с заменой переменных
+  - Добавление информации об инструментах и задачах
+
+### 5.3. Паттерн использования промтов
+
+Типичный процесс работы с промтом:
+
+```python
+# 1. Чтение промта из файла
+prompt = PromptReader.read_agent_prompt(__file__, "prompt_name.txt")
+
+# 2. Замена переменных
+prompt = prompt.replace("{goals}", goals_string)
+prompt = prompt.replace("{instructions}", instructions)
+
+# 3. Создание сообщения для LLM
+messages = [{"role": "system", "content": prompt}]
+
+# 4. Отправка в LLM и получение ответа
+result = llm.chat_completion(messages)
+```
+
+### 5.4. Форматы ответов
+
+**JSON форматы:**
+- Основной агент: `{thoughts: {...}, tool: {name, args}}`
+- Задачи: `["task1", "task2", ...]`
+- GitHub review: `{comments: [{file_path, line, comment}, ...]}`
+
+**Текстовые форматы:**
+- Thinking инструмент: описательный текст с обоснованием
+- Суммаризация: краткое резюме в пределах лимита символов
+
+**Код форматы:**
+- Write Code/Test: файлы в markdown code blocks
+- Improve Code: только код в блоке ```
+
+### 5.5. Типы агентов и их промты
+
+1. **Task-based Agent** - использует промты управления задачами для планирования и выполнения
+2. **Direct Execution Agent** - использует основной промт superagi.txt
+3. **Code Agent** - специализируется на промтах разработки кода
+4. **Review Agent** - использует промты для анализа и ревью кода
+
+---
+
+## Заключение
+
+Все промты в SuperAGI спроектированы для работы в связке друг с другом, создавая полноценную систему автономного AI агента. Промты задают четкие форматы ответов (в основном JSON), что позволяет легко парсить и использовать результаты работы агента в коде.
+
+Ключевые особенности системы промтов SuperAGI:
+- Модульность - каждый промт отвечает за конкретную функцию
+- Структурированность - использование JSON схем для валидации ответов
+- Контекстность - передача целей, истории и контекста между промтами
+- Самокритичность - агент анализирует свои действия и планы
+- Эффективность - оптимизация использования инструментов
