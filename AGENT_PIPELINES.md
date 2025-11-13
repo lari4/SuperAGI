@@ -717,3 +717,359 @@ else:
 ```
 
 ---
+
+## Pipeline 3: Tool-Specific Execution
+
+### Описание
+
+Tool-Specific Execution - это режим выполнения фиксированного workflow с конкретными инструментами. В этом режиме последовательность инструментов заранее определена в AgentWorkflow, а LLM используется только для генерации параметров инструментов.
+
+### Компоненты
+
+**Обработчик:** `AgentToolStepHandler`
+**Файл:** `/superagi/agent/agent_tool_step_handler.py`
+**Action Type:** `TOOL`
+
+### Схема пайплайна
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ AgentWorkflowStep (action_type = TOOL)                  │
+│ action_reference_id → Tool ID from DB                   │
+└────────────────┬─────────────────────────────────────────┘
+                 │
+┌────────────────▼─────────────────────────────────────────┐
+│ AgentToolStepHandler.execute_step()                      │
+│                                                           │
+│ STEP 1: Проверка специальных случаев                    │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ if tool_name == "TASK_QUEUE":                     │  │
+│ │    → QueueStepHandler.execute_step()              │  │
+│ │                                                    │  │
+│ │ elif tool_name == "WAIT_FOR_PERMISSION":          │  │
+│ │    → Create AgentExecutionPermission              │  │
+│ │    → Status: WAITING_FOR_PERMISSION               │  │
+│ └───────────────────────────────────────────────────┘  │
+│                         │                                 │
+│                         ▼                                 │
+│ STEP 2: Генерация параметров инструмента                │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ _process_input_instruction()                      │  │
+│ │                                                    │  │
+│ │ Промт: agent_tool_input.txt                      │  │
+│ │ ┌─────────────────────────────────────────────┐  │  │
+│ │ │ {tool_name} is the most suitable tool      │  │  │
+│ │ │ High-Level GOAL: {goals}                    │  │  │
+│ │ │ INSTRUCTION: {instruction}                  │  │  │
+│ │ │ {tool_schema}                               │  │  │
+│ │ │                                              │  │  │
+│ │ │ Respond with: {name, args}                  │  │  │
+│ │ └─────────────────────────────────────────────┘  │  │
+│ │                                                    │  │
+│ │ LLM Response:                                     │  │
+│ │ {                                                 │  │
+│ │   "name": "WriteFile",                            │  │
+│ │   "args": {                                       │  │
+│ │     "file_name": "output.txt",                    │  │
+│ │     "content": "Generated content..."             │  │
+│ │   }                                               │  │
+│ │ }                                                 │  │
+│ └───────────────────────────────────────────────────┘  │
+│                         │                                 │
+│                         ▼                                 │
+│ STEP 3: Выполнение инструмента                          │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ ToolExecutor.execute(tool_name, tool_args)        │  │
+│ │ → tool_response                                   │  │
+│ └───────────────────────────────────────────────────┘  │
+│                         │                                 │
+│                         ▼                                 │
+│ STEP 4: Интерпретация результата (опционально)          │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ if output_instruction exists:                     │  │
+│ │    _process_output_instruction()                  │  │
+│ │                                                    │  │
+│ │    Промт: agent_tool_output.txt                  │  │
+│ │    ┌───────────────────────────────────────────┐  │  │
+│ │    │ Analyze {tool_name} output               │  │  │
+│ │    │ TOOL OUTPUT: {tool_output}               │  │  │
+│ │    │ INSTRUCTION: {instruction}               │  │  │
+│ │    │                                           │  │  │
+│ │    │ Response: one of {output_options}        │  │  │
+│ │    └───────────────────────────────────────────┘  │  │
+│ │                                                    │  │
+│ │    Используется для conditional routing:          │  │
+│ │    LLM → "success" или "error"                    │  │
+│ └───────────────────────────────────────────────────┘  │
+│                         │                                 │
+│                         ▼                                 │
+│ STEP 5: Определение следующего шага                     │
+│ ┌───────────────────────────────────────────────────┐  │
+│ │ _handle_next_step(step_response)                  │  │
+│ │                                                    │  │
+│ │ AgentWorkflowStep.next_steps:                     │  │
+│ │ [                                                 │  │
+│ │   {"step_response": "success", "step_id": 2},    │  │
+│ │   {"step_response": "error", "step_id": 3},      │  │
+│ │   {"step_response": "default", "step_id": -1}    │  │
+│ │ ]                                                 │  │
+│ │                                                    │  │
+│ │ Matching:                                         │  │
+│ │ - step_response == "success" → step_id 2          │  │
+│ │ - step_response == "error" → step_id 3            │  │
+│ │ - step_id == -1 → COMPLETED                       │  │
+│ └───────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Используемые промты
+
+1. **agent_tool_input.txt** - генерация параметров инструмента
+2. **agent_tool_output.txt** - интерпретация результата для маршрутизации
+
+### Особенности
+
+1. **Фиксированный workflow** - последовательность инструментов предопределена
+2. **Conditional routing** - маршрутизация на основе результата инструмента
+3. **LLM для параметров** - агент генерирует только аргументы, не выбор инструмента
+4. **Специальные инструменты** - TASK_QUEUE и WAIT_FOR_PERMISSION обрабатываются отдельно
+
+---
+
+## Pipeline 4: Memory Management (LTM)
+
+### Описание
+
+Memory Management обеспечивает долговременную память агента через VectorStore и суммаризацию истории диалогов. Это позволяет агенту помнить контекст даже при превышении лимита токенов.
+
+### Компоненты
+
+**Класс:** `AgentLlmMessageBuilder`
+**Файл:** `/superagi/agent/agent_message_builder.py`
+**VectorStore:** Redis с OpenAI Embeddings
+
+### Схема пайплайна
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ СОХРАНЕНИЕ В ПАМЯТЬ (каждая итерация)                   │
+└──────────────────────────────────────────────────────────┘
+
+ToolOutputHandler.add_text_to_memory()
+    │
+    ├─→ Извлечение текста из LLM response
+    │   └─ thoughts.text + tool_response
+    │
+    ├─→ TokenTextSplitter (chunk_size=1024, overlap=10)
+    │   └─ Разбиение на chunks для embedding
+    │
+    └─→ VectorStore.add_texts()
+        ├─ texts: list of chunks
+        └─ metadata: {"agent_execution_id": ...}
+
+┌──────────────────────────────────────────────────────────┐
+│ ПОСТРОЕНИЕ СООБЩЕНИЙ С ИСТОРИЕЙ                         │
+└──────────────────────────────────────────────────────────┘
+
+AgentLlmMessageBuilder.build_agent_messages()
+    │
+    ├─→ Расчет лимитов токенов
+    │   ├─ max_output_token_limit = 800
+    │   ├─ base_tokens = len(prompt)
+    │   └─ available = token_limit - base - max_output
+    │
+    ├─→ Загрузка истории из AgentExecutionFeed
+    │   └─ История с role: assistant/system/user
+    │
+    ├─→ Разделение истории по token limit
+    │   ├─ _split_history(available_tokens)
+    │   ├─ past_messages → старые (за пределами лимита)
+    │   └─ current_messages → свежие (в пределах лимита)
+    │
+    ├─→ LTM Summarization для past_messages
+    │   │
+    │   ├─→ Промт: agent_summary.txt
+    │   │   ┌────────────────────────────────────────┐
+    │   │   │ Generate concise summary of:          │
+    │   │   │ {past_messages}                       │
+    │   │   │ Max length: {char_limit}              │
+    │   │   └────────────────────────────────────────┘
+    │   │
+    │   └─→ Если есть previous_ltm_summary:
+    │       Промт: agent_recursive_summary.txt
+    │       ┌────────────────────────────────────────┐
+    │       │ Integrate new messages into:          │
+    │       │ Previous Summary: {previous_summary}  │
+    │       │ {past_messages}                       │
+    │       └────────────────────────────────────────┘
+    │
+    └─→ Формирование итоговых messages
+        [
+          {"role": "system", "content": prompt},
+          {"role": "system", "content": current_time},
+          {"role": "system", "content": ltm_summary},  // если есть
+          ...current_messages,                          // последние N
+          {"role": "user", "content": completion_prompt}
+        ]
+
+┌──────────────────────────────────────────────────────────┐
+│ ПОИСК В ПАМЯТИ (опционально)                            │
+└──────────────────────────────────────────────────────────┘
+
+VectorStore.similarity_search(query, k=5)
+    └─→ Возвращает релевантные chunks по embedding similarity
+```
+
+### Особенности
+
+1. **Chunking** - текст разбивается на chunks по 1024 токена с overlap 10
+2. **Recursive Summary** - каждое новое резюме интегрирует предыдущее
+3. **Token Management** - автоматическое управление лимитами для экономии токенов
+4. **Persistent Storage** - Redis VectorStore выживает при перезагрузке
+5. **Metadata Filtering** - поиск по agent_execution_id
+
+---
+
+## Pipeline 5: Permission Control
+
+### Описание
+
+Permission Control обеспечивает механизм получения разрешения пользователя перед выполнением критичных инструментов в режиме RESTRICTED.
+
+### Схема пайплайна
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ ОБНАРУЖЕНИЕ НЕОБХОДИМОСТИ РАЗРЕШЕНИЯ                    │
+└──────────────────────────────────────────────────────────┘
+
+ToolOutputHandler._check_permission_in_restricted_mode()
+    │
+    ├─→ if agent.permission_type != "RESTRICTED":
+    │      return proceed  # No permission needed
+    │
+    ├─→ if not tool.permission_required:
+    │      return proceed  # Tool doesn't need permission
+    │
+    └─→ Create AgentExecutionPermission
+        ├─ agent_execution_id
+        ├─ agent_id
+        ├─ tool_name
+        ├─ assistant_reply (LLM thoughts + tool request)
+        ├─ status: PENDING
+        └─ user_feedback: null
+
+┌──────────────────────────────────────────────────────────┐
+│ ОЖИДАНИЕ РАЗРЕШЕНИЯ                                      │
+└──────────────────────────────────────────────────────────┘
+
+AgentExecution.status = WAITING_FOR_PERMISSION
+    └─→ Цикл выполнения агента останавливается
+
+┌──────────────────────────────────────────────────────────┐
+│ ПОЛУЧЕНИЕ ОТВЕТА ПОЛЬЗОВАТЕЛЯ (через API)               │
+└──────────────────────────────────────────────────────────┘
+
+PUT /api/agent-execution-permission/{id}
+    {
+      "status": "APPROVED" | "REJECTED",
+      "user_feedback": "Optional feedback text"
+    }
+
+┌──────────────────────────────────────────────────────────┐
+│ ПРОДОЛЖЕНИЕ ВЫПОЛНЕНИЯ                                   │
+└──────────────────────────────────────────────────────────┘
+
+if permission.status == "APPROVED":
+    ├─→ Execute tool normally
+    └─→ Continue to next step
+
+elif permission.status == "REJECTED":
+    ├─→ Skip tool execution
+    ├─→ Add rejection to feed
+    └─→ Continue or terminate (зависит от workflow)
+```
+
+### Особенности
+
+1. **Selective Permissions** - только инструменты с `permission_required=True`
+2. **Mode-Based** - работает только в режиме RESTRICTED
+3. **User Feedback** - пользователь может добавить комментарий
+4. **Async Handling** - агент ждет без блокировки worker'а
+5. **Tool Metadata** - полный контекст для принятия решения
+
+---
+
+## Компоненты системы
+
+### Основные файлы и их роли
+
+| Компонент | Файл | Функция |
+|-----------|------|---------|
+| **Agent Executor** | `agent_executor.py` | Оркестратор выполнения, dispatcher шагов |
+| **Iteration Handler** | `agent_iteration_step_handler.py` | Direct/Task-based execution |
+| **Tool Handler** | `agent_tool_step_handler.py` | Tool-specific workflow execution |
+| **Queue Handler** | `queue_step_handler.py` | Redis task queue management |
+| **Wait Handler** | `agent_workflow_step_wait_handler.py` | Асинхронные паузы |
+| **Tool Executor** | `tool_executor.py` | Выполнение инструментов с retry logic |
+| **Tool Builder** | `tool_builder.py` | Динамическая загрузка и конфигурирование |
+| **Output Handler** | `output_handler.py` | Парсинг LLM ответов и обработка результатов |
+| **Message Builder** | `agent_message_builder.py` | Формирование контекста с LTM |
+| **Prompt Builder** | `agent_prompt_builder.py` | Динамическое формирование промптов |
+| **Task Queue** | `task_queue.py` | Redis LPUSH/LPOP операции |
+| **Worker** | `worker.py` | Celery tasks для асинхронного выполнения |
+
+### Модели данных
+
+```python
+# Основные модели
+AgentExecution        # Состояние выполнения агента
+Agent                 # Конфигурация агента (goals, constraints)
+AgentWorkflow         # Workflow определение
+AgentWorkflowStep     # Шаг в workflow с action_type
+AgentExecutionFeed    # История сообщений (assistant/system/user)
+AgentExecutionPermission  # Запросы на разрешение
+IterationWorkflow     # Iteration конфигурация (has_task_queue)
+Tool                  # Инструмент с metadata и schema
+```
+
+### Celery Tasks
+
+```python
+# Worker tasks
+@celery.task(name="execute_agent", ...)
+def execute_agent(agent_execution_id, time):
+    """Основной task для выполнения агента"""
+
+# Periodic tasks (Celery Beat)
+@celery.task(name="execute_waiting_workflows")
+def execute_waiting_workflows():
+    """Проверка WAIT_STEP каждые 2 минуты"""
+
+@celery.task(name="initialize_schedule_agent_task")
+def initialize_schedule_agent_task():
+    """Запуск scheduled агентов каждые 5 минут"""
+```
+
+---
+
+## Заключение
+
+SuperAGI использует модульную архитектуру с четкими пайплайнами для разных режимов работы:
+
+1. **Direct Execution** - автономный агент с самостоятельным выбором инструментов
+2. **Task-Based Execution** - планирование и последовательное выполнение подзадач
+3. **Tool-Specific Execution** - фиксированные workflow с conditional routing
+4. **Memory Management** - долговременная память через векторное хранилище
+5. **Permission Control** - контроль пользователя над критичными действиями
+
+Все пайплайны интегрируются через единый AgentExecutor и используют общие компоненты для работы с промптами, инструментами и хранением данных.
+
+### Ключевые особенности архитектуры:
+
+- **Асинхронность** - Celery для неблокирующего выполнения
+- **Персистентность** - Redis и PostgreSQL для хранения состояния
+- **Масштабируемость** - Worker pool для параллельной обработки
+- **Гибкость** - Различные режимы работы для разных задач
+- **Контроль** - Permission system для безопасности
+- **Память** - LTM через векторное хранилище для долгих сессий
